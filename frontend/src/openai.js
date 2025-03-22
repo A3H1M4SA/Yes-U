@@ -1,5 +1,5 @@
-const fs = require('fs');
-const axios = require('axios');
+// const fs = require('fs');
+import axios from 'axios';
 
 // Replace with your OpenAI API key (or use env var securely)
 const OPENAI_API_KEY = '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';
@@ -356,45 +356,55 @@ Provide your analysis in the following JSON structure optimized for HTML templat
 `;
 
 // Function to send data to ChatGPT
-async function analyzeWebsiteRawData(rawInput) {
-    try {
-        const response = await axios.post('https://api.openai.com/v1/chat/completions', {
-            model: 'gpt-4o-mini',
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: rawInput }
-            ],
-            temperature: 0.2
-        }, {
-            headers: {
-                'Authorization': `Bearer ${OPENAI_API_KEY}`,
-                'Content-Type': 'application/json'
-            }
-        });
+export async function analyzeWebsiteRawData(rawInput) {
+  try {
+    const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: rawInput }
+      ],
+      temperature: 0.2
+    }, {
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
 
-        console.log("\n🔍 Analysis Result:\n");
-        console.log(response.data.choices[0].message.content);
-    } catch (error) {
-        console.error("❌ Error calling OpenAI API:", error.response?.data || error.message);
+    const content = response.data.choices[0].message.content;
+    const jsonMatch = content.match(/```json\s*(.*?)\s*```/s);
+    if (jsonMatch) {
+      try {
+        const parsedData = JSON.parse(jsonMatch[1]);
+        return parsedData;
+      } catch (e) {
+        console.error("Failed to parse JSON from response:", e);
+        return content;
+      }
     }
+    return content;
+  } catch (error) {
+    console.error("❌ Error calling OpenAI API:", error.response?.data || error.message);
+  }
 }
 
 // Load raw JSON/text file
-const filePath = './rawWebsiteData.json'; // Change this to your actual file
-fs.readFile(filePath, 'utf8', (err, rawData) => {
-    if (err) {
-        console.error("❌ Failed to read file:", err);
-        return;
-    }
+// const filePath = './rawWebsiteData.json'; // Change this to your actual file
+// fs.readFile(filePath, 'utf8', (err, rawData) => {
+//   if (err) {
+//     console.error("❌ Failed to read file:", err);
+//     return;
+//   }
 
-    try {
-        // Parse the JSON data to validate it
-        const parsedData = JSON.parse(rawData);
-        console.log("📤 Sending data for analysis...");
+//   try {
+//     // Parse the JSON data to validate it
+//     const parsedData = JSON.parse(rawData);
+//     console.log("📤 Sending data for analysis...");
 
-        // Send the parsed data as a stringified JSON
-        analyzeWebsiteRawData(JSON.stringify(parsedData, null, 2));
-    } catch (parseError) {
-        console.error("❌ Failed to parse JSON data:", parseError);
-    }
-});
+//     // Send the parsed data as a stringified JSON
+//     analyzeWebsiteRawData(JSON.stringify(parsedData, null, 2));
+//   } catch (parseError) {
+//     console.error("❌ Failed to parse JSON data:", parseError);
+//   }
+// });

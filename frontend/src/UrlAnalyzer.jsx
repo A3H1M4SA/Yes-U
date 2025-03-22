@@ -3,6 +3,7 @@ import { useForm } from "react-hook-form";
 import URLParse from "url-parse";
 import Report from "./components/Report";
 import html2pdf from "html2pdf.js";
+import { analyzeWebsiteRawData } from "./openai";
 
 export default function UrlAnalyzer() {
   const [loading, setLoading] = useState(false);
@@ -57,275 +58,23 @@ export default function UrlAnalyzer() {
       )}`;
       const response = await fetch(proxyUrl);
 
-      if (!response.ok) {
+      const reportProxyUrl = `http://localhost:3001/proxy?url=${encodeURIComponent(
+        `https://api.gmsahimsa.com/raw.php?url=${data.url}`
+      )}`;
+      const report = await fetch(reportProxyUrl);
+
+      if (!response.ok || !report.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
+      const reportResponse = await report.json();
+      const reportD = await analyzeWebsiteRawData(
+        JSON.stringify(reportResponse, null, 2)
+      );
+      console.log("report", reportD);
+
       // Set the complete report data
-      setReportData({
-        report: {
-          sections: [
-            {
-              id: "executive-summary",
-              title: "Executive Summary",
-              type: "summary",
-              content: {
-                riskLevel: "C",
-                summary:
-                  "The target exhibits several vulnerabilities, including potential SQL injection and missing security headers.",
-                timestamp: "2025-03-22T05:00:27Z",
-              },
-            },
-            {
-              id: "basic-info",
-              title: "Basic Information",
-              type: "grid",
-              content: {
-                items: [
-                  {
-                    label: "IP Address",
-                    value: "104.21.16.1",
-                    icon: "network",
-                    status: "normal",
-                  },
-                  {
-                    label: "DNS",
-                    value: "nextcloud.gmsahimsa.com",
-                    icon: "dns",
-                    status: "normal",
-                  },
-                  {
-                    label: "Location",
-                    value: "San Francisco, California, US",
-                    icon: "location",
-                    status: "normal",
-                  },
-                  {
-                    label: "ISP",
-                    value: "Cloudflare, Inc.",
-                    icon: "provider",
-                    status: "normal",
-                  },
-                ],
-              },
-            },
-            {
-              id: "ssl-certificate",
-              title: "SSL Certificate Analysis",
-              type: "status",
-              content: {
-                status: "valid",
-                badge: {
-                  text: "Valid",
-                  type: "success",
-                },
-                details: [
-                  {
-                    label: "Expiry Date",
-                    value: "2025-05-14",
-                    status: "normal",
-                  },
-                  {
-                    label: "Issuer",
-                    value: "WE1",
-                    status: "normal",
-                  },
-                  {
-                    label: "Encryption Strength",
-                    value: "ECDSA with SHA256",
-                    status: "normal",
-                  },
-                ],
-              },
-            },
-            {
-              id: "open-ports",
-              title: "Open Ports",
-              type: "list",
-              content: {
-                ports: [
-                  {
-                    number: 80,
-                    service: "HTTP",
-                    risk: "high",
-                    badge: {
-                      text: "High Risk",
-                      type: "danger",
-                    },
-                    description:
-                      "Standard HTTP port, potentially vulnerable to various attacks.",
-                  },
-                  {
-                    number: 443,
-                    service: "HTTPS",
-                    risk: "normal",
-                    badge: {
-                      text: "Normal",
-                      type: "info",
-                    },
-                    description:
-                      "Secure HTTP port, but requires proper configuration.",
-                  },
-                ],
-              },
-            },
-            {
-              id: "http-headers",
-              title: "HTTP Headers Security",
-              type: "grid",
-              content: {
-                headers: [],
-                missingHeaders: [
-                  {
-                    name: "Strict-Transport-Security",
-                    recommendation:
-                      "Implement HSTS to enforce secure connections.",
-                  },
-                  {
-                    name: "Content-Security-Policy",
-                    recommendation: "Define a CSP to mitigate XSS attacks.",
-                  },
-                  {
-                    name: "X-Frame-Options",
-                    recommendation: "Use this header to prevent clickjacking.",
-                  },
-                  {
-                    name: "X-Content-Type-Options",
-                    recommendation:
-                      "Set this header to prevent MIME type sniffing.",
-                  },
-                  {
-                    name: "Referrer-Policy",
-                    recommendation:
-                      "Specify a referrer policy to enhance privacy.",
-                  },
-                ],
-              },
-            },
-            {
-              id: "sql-injection",
-              title: "SQL Injection Scan",
-              type: "status",
-              content: {
-                vulnerable: true,
-                badge: {
-                  text: "Vulnerable",
-                  type: "danger",
-                },
-                details:
-                  "The application returned unusual behavior during the SQL injection test, indicating a potential vulnerability.",
-              },
-            },
-            {
-              id: "cookies",
-              title: "Cookie Security",
-              type: "grid",
-              content: {
-                flags: [
-                  {
-                    name: "Secure Flag",
-                    status: "absent",
-                    badge: {
-                      text: "Absent",
-                      type: "danger",
-                    },
-                  },
-                  {
-                    name: "HttpOnly Flag",
-                    status: "absent",
-                    badge: {
-                      text: "Absent",
-                      type: "danger",
-                    },
-                  },
-                  {
-                    name: "SameSite Flag",
-                    status: "absent",
-                    badge: {
-                      text: "Absent",
-                      type: "danger",
-                    },
-                  },
-                ],
-              },
-            },
-            {
-              id: "external-apis",
-              title: "External API Analysis",
-              type: "grid",
-              content: {
-                apis: [
-                  {
-                    name: "SSL Labs",
-                    data: {
-                      services: ["HTTPS"],
-                      ports: ["443"],
-                      vulnerabilities: [
-                        "Potential issues with SSL configuration",
-                      ],
-                    },
-                  },
-                ],
-              },
-            },
-            {
-              id: "recommendations",
-              title: "Recommendations",
-              type: "categories",
-              content: {
-                categories: [
-                  {
-                    name: "Critical",
-                    items: [
-                      "Implement HSTS and other missing security headers.",
-                      "Fix potential SQL injection vulnerabilities.",
-                    ],
-                    badge: {
-                      text: "Critical",
-                      type: "danger",
-                    },
-                  },
-                  {
-                    name: "High Priority",
-                    items: [
-                      "Ensure cookies have Secure and HttpOnly flags set.",
-                    ],
-                    badge: {
-                      text: "High",
-                      type: "warning",
-                    },
-                  },
-                  {
-                    name: "Medium Priority",
-                    items: [
-                      "Review and update the technology stack for vulnerabilities.",
-                    ],
-                    badge: {
-                      text: "Medium",
-                      type: "info",
-                    },
-                  },
-                  {
-                    name: "Low Priority",
-                    items: [
-                      "Regularly monitor for new vulnerabilities and apply patches.",
-                    ],
-                    badge: {
-                      text: "Low",
-                      type: "success",
-                    },
-                  },
-                ],
-              },
-            },
-          ],
-          metadata: {
-            generatedAt: "2025-03-22T05:00:27Z",
-            version: "1.0",
-            scanDuration: "8.62s",
-          },
-        },
-      });
+      setReportData(reportData);
     } catch (err) {
       setError(`Failed to fetch: ${err.message}`);
     } finally {
@@ -383,7 +132,7 @@ export default function UrlAnalyzer() {
                         isValidUrl(value) || "Please enter a valid URL",
                     })}
                     placeholder="Enter URL to analyze (e.g., https://example.com)"
-                    className={`w-full px-6 py-4 bg-white rounded-lg shadow-sm border-2 relative z-10 transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    className={`w-full px-6 py-4 bg-white text-black rounded-lg shadow-sm border-2 relative z-10 transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                       errors.url
                         ? "border-red-300 focus:border-red-500 focus:ring-red-500"
                         : "border-transparent hover:border-blue-200 focus:border-blue-500"

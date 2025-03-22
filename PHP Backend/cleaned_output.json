@@ -1499,7 +1499,8 @@
                             "name": "TLS_AES_256_GCM_SHA384"
                         },
                         "trust": {
-                            "revoked": false,
+                            "re,
+                                        voked": false,
                             "browser": null
                         },
                         "handshake_states": [

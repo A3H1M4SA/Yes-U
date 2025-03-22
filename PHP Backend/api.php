@@ -13,29 +13,28 @@ function endTimer($start) {
     ];
 }
 
-function curlGet($url, $asJson = false) {
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_USERAGENT => "Mozilla/5.0",
-        CURLOPT_SSL_VERIFYHOST => false,
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_TIMEOUT => 10,
-    ]);
+function curlGet($url) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 5); // 5 second timeout
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3); // 3 second connection timeout
+    
     $response = curl_exec($ch);
     $error = curl_error($ch);
     curl_close($ch);
-
-    if ($response === false) {
-        return ["error" => $error ?: "Unknown cURL error"];
+    
+    if ($error) {
+        return ['error' => $error];
     }
-
-    return $asJson ? json_decode($response, true) : $response;
+    
+    return $response;
 }
 
 function getOpenPorts($host) {
-    $ports = [21,22,23,25,53,80,110,143,443,3306,3389,5900];
+    $ports = [21,22,23,25,53,69,80,110,111,135,139,143,161,389,443,445,465,993,995,3306,3389,5432,5900,6379];
     $open = [];
     foreach ($ports as $port) {
         if (@fsockopen($host, $port, $errno, $errstr, 0.5)) {
@@ -46,14 +45,144 @@ function getOpenPorts($host) {
 }
 
 function simulateSQLi($url) {
-    $testUrl = rtrim($url, '/') . "/?id=' OR '1'='1";
-    $res = curlGet($testUrl);
-    if (isset($res['error'])) return ["status" => "error", "message" => $res['error']];
-    $flags = ['sql', 'syntax', 'mysql', 'ORA-', 'ODBC'];
-    foreach ($flags as $f) {
-        if (stripos($res, $f) !== false) return ["status" => "potential", "indicator" => $f];
+    $payloads = [
+        "' OR '1'='1", "' OR 1=1--", "'; WAITFOR DELAY '0:0:5'--",
+        "' AND sleep(5)--", "\" OR \"\" = \"", "' OR '' = '",
+        "' OR 'a' = 'a", "' AND 1=0 UNION SELECT null--"
+    ];
+    $results = [];
+    foreach ($payloads as $payload) {
+        $testUrl = rtrim($url, '/') . "/?id=" . urlencode($payload);
+        $res = curlGet($testUrl);
+        $match = false;
+        if (isset($res['error'])) {
+            $results[] = ["payload" => $payload, "result" => "error", "message" => $res['error']];
+            continue;
+        }
+        $flags = ['sql', 'syntax', 'mysql', 'ORA-', 'ODBC', 'error'];
+        foreach ($flags as $f) {
+            if (stripos($res, $f) !== false) {
+                $match = true;
+                break;
+            }
+        }
+        $results[] = ["payload" => $payload, "result" => $match ? "potential vulnerability" : "clean"];
     }
-    return ["status" => "clean"];
+    return $results;
+}
+
+function simulateXSS($url) {
+    // Simple test payloads that won't cause PHP parsing issues
+    $testPayloads = [
+        "xss'test",
+        "xss\"test",
+        "<script>test</script>",
+        "<img src=x onerror=test>",
+        "javascript:test",
+        "';alert(1);'",
+        "\";alert(1);\"",
+        "</script><script>test</script>",
+        "<a href=\"javascript:test\">click</a>"
+    ];
+
+    $results = [];
+    $commonParameters = ['q', 'search', 'query', 'id', 'page'];
+    
+    // Very limited testing to prevent timeout
+    $maxTests = 3; // Only test 3 payloads
+    $testCount = 0;
+
+    foreach ($testPayloads as $payload) {
+        if ($testCount >= $maxTests) {
+            break;
+        }
+        $testCount++;
+        
+        $findings = [];
+        
+        // Only test 2 parameters to prevent timeout
+        $limitedParams = array_slice($commonParameters, 0, 2);
+        foreach ($limitedParams as $param) {
+            // URL Parameter Test
+            $testUrl = rtrim($url, '/') . "/?" . $param . "=" . urlencode($payload);
+            $res = curlGet($testUrl);
+            
+            if (is_array($res) && isset($res['error'])) {
+                $findings[] = [
+                    "injection_point" => "url_param_" . $param,
+                    "status" => "error",
+                    "message" => $res['error']
+                ];
+                continue;
+            }
+
+            // Simple reflection check
+            $reflected = (stripos($res, $payload) !== false);
+            $sanitized = false;
+            
+            // Check if potentially sanitized
+            if (stripos($res, strip_tags($payload)) !== false) {
+                $sanitized = true;
+            }
+
+            // Very simple execution check
+            $executionPossible = false;
+            if ($reflected && !$sanitized && (
+                stripos($res, "<script") !== false || 
+                stripos($res, "javascript:") !== false ||
+                stripos($res, "onerror") !== false
+            )) {
+                $executionPossible = true;
+            }
+
+            $findings[] = [
+                "injection_point" => "url_param_" . $param,
+                "payload" => $payload,
+                "reflected" => $reflected,
+                "sanitized" => $sanitized,
+                "execution_possible" => $executionPossible
+            ];
+        }
+
+        $results[] = [
+            "payload" => $payload,
+            "findings" => $findings,
+            "overall_risk" => calculateXSSRisk($findings)
+        ];
+    }
+
+    return $results;
+}
+
+function calculateXSSRisk($findings) {
+    $riskScore = 0;
+    $totalTests = count($findings);
+    
+    if ($totalTests == 0) {
+        return "Unknown";
+    }
+    
+    foreach ($findings as $finding) {
+        if ($finding['reflected'] && !$finding['sanitized']) {
+            $riskScore += 1;
+            
+            if (isset($finding['execution_possible']) && $finding['execution_possible']) {
+                $riskScore += 2;
+            }
+        }
+    }
+    
+    $normalizedScore = $riskScore / $totalTests;
+    
+    if ($normalizedScore >= 2) {
+        return "High";
+    } else if ($normalizedScore >= 0.5) {
+        return "Medium";
+    } else if ($normalizedScore > 0) {
+        return "Low";
+    } else {
+        return "None";
+    }
 }
 
 function getDNS($host) {
@@ -77,16 +206,122 @@ function getSSLDetails($host) {
     ];
 }
 
-function detectTechStack($html) {
+function detectTechStack($html, $headers = []) {
     if (!is_string($html)) return [];
     $tech = [];
-    if (stripos($html, 'wp-content') !== false) $tech[] = "WordPress";
-    if (stripos($html, 'jquery') !== false) $tech[] = "jQuery";
-    if (stripos($html, 'bootstrap') !== false) $tech[] = "Bootstrap";
-    if (stripos($html, 'react') !== false) $tech[] = "React.js";
-    if (stripos($html, 'vue') !== false) $tech[] = "Vue.js";
-    if (stripos($html, 'cdn.jsdelivr') !== false) $tech[] = "JSDelivr CDN";
-    if (stripos($html, 'fontawesome') !== false) $tech[] = "FontAwesome";
+    
+    // CMS Detection
+    $cmsPatterns = [
+        'WordPress' => ['wp-content', 'wp-includes', 'wp-json'],
+        'Drupal' => ['drupal.js', 'drupal.min.js', 'sites/all/themes', 'sites/default'],
+        'Joomla' => ['joomla', 'com_content', 'com_users', '/administrator'],
+        'Magento' => ['magento', 'skin/frontend', 'Mage.Cookies'],
+        'Shopify' => ['shopify', 'cdn.shopify.com', 'shopify-payment-button'],
+        'WooCommerce' => ['woocommerce', 'wc-api', 'wc_cart'],
+        'PrestaShop' => ['prestashop', 'presta-', '/modules/ps_']
+    ];
+    
+    // JavaScript Frameworks
+    $jsPatterns = [
+        'jQuery' => ['jquery', 'jQuery'],
+        'React.js' => ['react', 'reactjs', '_reactRootContainer', '__REACT_DEVTOOLS_GLOBAL_HOOK__'],
+        'Vue.js' => ['vue', '__vue__', 'vuex', 'nuxt'],
+        'Angular' => ['ng-', 'angular', 'ng2', '_ng'],
+        'Next.js' => ['__NEXT_DATA__', '_next/static'],
+        'Svelte' => ['svelte-', '__SVELTE'],
+        'Alpine.js' => ['alpine', 'x-data', 'x-bind'],
+        'Backbone.js' => ['backbone', 'Backbone.View']
+    ];
+    
+    // UI Frameworks
+    $uiPatterns = [
+        'Bootstrap' => ['bootstrap', 'navbar-toggle', 'container-fluid'],
+        'Tailwind' => ['tailwind', 'tw-', 'space-y-'],
+        'Material-UI' => ['MuiButton', 'MuiTypography', 'makeStyles'],
+        'Bulma' => ['bulma', 'is-primary', 'is-info', 'navbar-burger'],
+        'Foundation' => ['foundation.', 'orbit-container', 'top-bar'],
+        'Semantic UI' => ['semantic', 'ui segment', 'ui grid']
+    ];
+    
+    // Build Tools & Module Bundlers
+    $buildTools = [
+        'Webpack' => ['webpack', '__webpack_require__', 'webpackJsonp'],
+        'Vite' => ['vite', '@vite', '/@vite'],
+        'Parcel' => ['parcel', '_parcel'],
+        'Rollup' => ['rollup', '_rollupJs']
+    ];
+    
+    // CDNs & Asset Delivery
+    $cdnPatterns = [
+        'JSDelivr' => ['cdn.jsdelivr.net'],
+        'Cloudflare' => ['cdnjs.cloudflare.com', 'cloudflare-static'],
+        'Google CDN' => ['ajax.googleapis.com'],
+        'Unpkg' => ['unpkg.com'],
+        'CDNJS' => ['cdnjs.com']
+    ];
+    
+    // Analytics & Marketing
+    $analyticsPatterns = [
+        'Google Analytics' => ['google-analytics', 'ga.js', 'analytics.js', 'gtag'],
+        'Google Tag Manager' => ['googletagmanager', 'gtm.js'],
+        'Facebook Pixel' => ['connect.facebook.net', 'fbq('],
+        'HotJar' => ['hotjar', 'hjid:', 'hjsv:'],
+        'Mixpanel' => ['mixpanel']
+    ];
+    
+    // Server Technologies (from headers)
+    if (!empty($headers)) {
+        $server = $headers['Server'] ?? $headers['server'] ?? '';
+        $poweredBy = $headers['X-Powered-By'] ?? $headers['x-powered-by'] ?? '';
+        
+        if (stripos($server, 'apache') !== false) $tech[] = "Apache";
+        if (stripos($server, 'nginx') !== false) $tech[] = "Nginx";
+        if (stripos($server, 'iis') !== false) $tech[] = "IIS";
+        if (stripos($poweredBy, 'php') !== false) $tech[] = "PHP";
+        if (stripos($poweredBy, 'asp.net') !== false) $tech[] = ".NET";
+        if (stripos($poweredBy, 'express') !== false) $tech[] = "Express.js";
+        
+        // Cache & Performance
+        if (isset($headers['X-Cache']) || isset($headers['X-Varnish'])) $tech[] = "Varnish Cache";
+        if (isset($headers['CF-Cache-Status'])) $tech[] = "Cloudflare";
+        if (isset($headers['X-Drupal-Cache'])) $tech[] = "Drupal";
+    }
+    
+    // Check all patterns against HTML
+    foreach ([$cmsPatterns, $jsPatterns, $uiPatterns, $buildTools, $cdnPatterns, $analyticsPatterns] as $category) {
+        foreach ($category as $tech_name => $patterns) {
+            foreach ($patterns as $pattern) {
+                if (stripos($html, $pattern) !== false) {
+                    $tech[] = $tech_name;
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Additional Specific Checks
+    if (preg_match('/<link[^>]*fonts.(googleapis|gstatic).com[^>]*>/', $html)) {
+        $tech[] = "Google Fonts";
+    }
+    if (preg_match('/<script[^>]*maps.google[^>]*>/', $html)) {
+        $tech[] = "Google Maps";
+    }
+    if (preg_match('/<i[^>]*fa[- ]/', $html)) {
+        $tech[] = "FontAwesome";
+    }
+    
+    // Version Detection (where possible)
+    if (preg_match('/bootstrap@([0-9.]+)/', $html, $matches)) {
+        $index = array_search('Bootstrap', $tech);
+        if ($index !== false) {
+            $tech[$index] = "Bootstrap v" . $matches[1];
+        }
+    }
+    
+    // Remove duplicates and sort
+    $tech = array_unique($tech);
+    sort($tech);
+    
     return $tech;
 }
 
@@ -129,6 +364,122 @@ function getSecurityHeadersStatus($headers) {
     return $status;
 }
 
+function simulateShellUpload($url) {
+    $testPaths = [
+        // Common upload endpoints
+        "/upload.php", "/upload", "/uploader", "/files/upload",
+        "/admin/upload", "/api/upload", "/assets/upload",
+        "/images/upload", "/media/upload", "/documents/upload",
+        
+        // Specific file upload endpoints
+        "/upload.php?file=shell.php", "/upload?file=shell.jsp",
+        "/api/upload?filename=cmd.php", "/upload/file?name=shell.phtml",
+        
+        // Bypass attempts
+        "/upload?file=shell.php.jpg", "/upload?file=shell.php%00.jpg",
+        "/upload?file=..%2F..%2Fshell.php", "/upload?file=shell.PhP",
+        "/upload?file=shell.php;.jpg", "/upload?file=shell.php::$DATA",
+        
+        // Common CMS paths
+        "/wp-content/uploads", "/administrator/components/upload",
+        "/includes/upload", "/filemanager/upload"
+    ];
+    
+    $shellSignatures = [
+        '.php', '.phtml', '.php3', '.php4', '.php5', '.jsp', '.jspx',
+        '.asp', '.aspx', '.cfm', '.cgi', 'cmd', 'shell', 'exec', 'system',
+        'passthru', 'eval', 'base64'
+    ];
+    
+    $successIndicators = [
+        'upload', 'success', 'file', 'uploaded', 'complete',
+        '200 OK', 'application/json', 'multipart/form-data'
+    ];
+    
+    $results = [];
+    
+    // Limit testing to prevent timeouts
+    $maxPaths = 5;
+    $pathCount = 0;
+    
+    foreach ($testPaths as $path) {
+        // Limit the number of tests
+        if ($pathCount >= $maxPaths) {
+            break;
+        }
+        $pathCount++;
+        
+        $checkUrl = rtrim($url, '/') . $path;
+        
+        // Test GET request
+        $res = curlGet($checkUrl);
+        if (is_array($res) && isset($res['error'])) {
+            $res = "Error: " . $res['error'];
+        }
+        
+        // Simulate POST request
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $checkUrl);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, "file=test.php");
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: multipart/form-data',
+            'X-Requested-With: XMLHttpRequest'
+        ]);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
+        $postRes = curl_exec($ch);
+        $error = curl_error($ch);
+        curl_close($ch);
+        
+        if ($error) {
+            $postRes = "Error: " . $error;
+        }
+        
+        $suspicious = false;
+        $reason = [];
+        
+        // Check for shell signatures
+        foreach ($shellSignatures as $sig) {
+            if (stripos($res . $postRes, $sig) !== false) {
+                $suspicious = true;
+                $reason[] = "Detected signature: $sig";
+            }
+        }
+        
+        // Check for success indicators
+        foreach ($successIndicators as $indicator) {
+            if (stripos($res . $postRes, $indicator) !== false) {
+                $suspicious = true;
+                $reason[] = "Found success indicator: $indicator";
+            }
+        }
+        
+        // Check response headers
+        if (stripos($res, 'application/json') !== false || 
+            stripos($res, 'multipart/form-data') !== false) {
+            $suspicious = true;
+            $reason[] = "Upload-compatible Content-Type detected";
+        }
+        
+        $results[] = [
+            "path" => $path,
+            "result" => $suspicious ? "potentially exploitable" : "likely safe",
+            "method_tested" => ["GET", "POST"],
+            "reasons" => $reason,
+            "response_length" => [
+                "get" => strlen($res),
+                "post" => strlen($postRes)
+            ]
+        ];
+    }
+    
+    return $results;
+}
+
 // MAIN
 if (!isset($_GET['url'])) {
     header('Content-Type: application/json');
@@ -142,18 +493,19 @@ $host = $parsed['host'] ?? $url;
 $ip = gethostbyname($host);
 $start = startTimer();
 
+[$headers, $html] = getHeadersAndHTML($url);
+
 $dns = getDNS($host);
 $ports = getOpenPorts($host);
 $ssl = getSSLDetails($host);
-[$headers, $html] = getHeadersAndHTML($url);
 $securityHeaders = getSecurityHeadersStatus($headers);
 $cookies = getCookieData($headers);
-$tech = detectTechStack($html);
+$tech = detectTechStack($html, $headers);
 $sql = simulateSQLi($url);
+$xss = simulateXSS($url);
+$shell = simulateShellUpload($url);
 
-// 🌐 External API integrations
 $external = [];
-
 $external['ssl_labs'] = curlGet("https://api.ssllabs.com/api/v3/analyze?host=$host", true);
 $external['security_headers'] = curlGet("https://securityheaders.com/?q=https://$host&followRedirects=on");
 $external['ipinfo'] = curlGet("https://ipinfo.io/$ip/json", true);
@@ -162,20 +514,14 @@ $external['shodan'] = curlGet("https://api.shodan.io/shodan/host/$ip?key=$shodan
 
 $end = endTimer($start);
 
-// FINAL OUTPUT
-// FINAL OUTPUT
 header('Content-Type: application/json');
 header('Content-Disposition: attachment; filename="output.json"');
 echo json_encode([
-
-    "meta" => [
+    "meta" => array_merge([
         "scan_target" => $url,
         "host" => $host,
-        "ip" => $ip,
-        "start_time" => $end["start_time"],
-        "end_time" => $end["end_time"],
-        "duration_seconds" => $end["duration_seconds"]
-    ],
+        "ip" => $ip
+    ], $end),
     "network" => [
         "dns_records" => $dns,
         "open_ports" => $ports
@@ -189,5 +535,7 @@ echo json_encode([
     "cookies" => $cookies,
     "technologies_detected" => $tech,
     "sql_injection_test" => $sql,
+    "xss_test" => $xss,
+    "remote_shell_upload_test" => $shell,
     "external" => $external
 ], JSON_PRETTY_PRINT);

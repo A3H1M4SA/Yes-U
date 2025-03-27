@@ -2,7 +2,7 @@
 import axios from 'axios';
 
 // Replace with your OpenAI API key (or use env var securely)
-const OPENAI_API_KEY = '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';
+const OPENAI_API_KEY = 'YOUR_OPENAI_API_KEY';
 
 // System prompt – the rule list
 const systemPrompt = `

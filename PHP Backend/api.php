@@ -162,7 +162,7 @@ $external = [];
 $external['ssl_labs'] = curlGet("https://api.ssllabs.com/api/v3/analyze?host=$host");
 $external['security_headers'] = curlGet("https://securityheaders.com/?q=https://$host&followRedirects=on");
 $external['ipinfo'] = curlGet("https://ipinfo.io/$ip/json");
-$shodanKey = "h9YmSewS9IaS3mE9WufnBhNPH4v9Txav";
+$shodanKey = "SHODAN_API_KEY";
 $external['shodan'] = curlGet("https://api.shodan.io/shodan/host/$ip?key=$shodanKey");
 
 $end = endTimer($start);
